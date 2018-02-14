@@ -1,5 +1,5 @@
 {
-  "name": "coffee-script",
+  "name": "coffeescript",
   "description": "Unfancy JavaScript",
   "keywords": [
     "javascript",
@@ -8,22 +8,29 @@
     "compiler"
   ],
   "author": "Jeremy Ashkenas",
-  "version": "1.8.0",
+  "version": "2.2.1",
   "license": "MIT",
   "engines": {
-    "node": ">=0.8.0"
+    "node": ">=6"
   },
   "directories": {
-    "lib": "./lib/coffee-script"
+    "lib": "./lib/coffeescript"
   },
-  "main": "./lib/coffee-script/coffee-script",
+  "main": "./lib/coffeescript/index",
+  "browser": "./lib/coffeescript/browser",
   "bin": {
     "coffee": "./bin/coffee",
     "cake": "./bin/cake"
   },
-  "preferGlobal": true,
+  "files": [
+    "bin",
+    "lib",
+    "register.js",
+    "repl.js"
+  ],
   "scripts": {
-    "test": "node ./bin/cake test"
+    "test": "node ./bin/cake test",
+    "test-harmony": "node --harmony ./bin/cake test"
   },
   "homepage": "http://coffeescript.org",
   "bugs": "https://github.com/jashkenas/coffeescript/issues",
@@ -32,13 +39,17 @@
     "url": "git://github.com/jashkenas/coffeescript.git"
   },
   "devDependencies": {
-    "uglify-js": "~2.2",
-    "jison": ">=0.2.0",
-    "highlight.js": "~8.0.0",
-    "underscore": "~1.5.2",
-    "docco": "~0.6.2"
+    "babel-core": "~6.26.0",
+    "babel-preset-babili": "~0.1.4",
+    "babel-preset-env": "~1.6.1",
+    "babel-preset-minify": "^0.3.0",
+    "codemirror": "^5.32.0",
+    "docco": "~0.8.0",
+    "highlight.js": "~9.12.0",
+    "jison": ">=0.4.18",
+    "markdown-it": "~8.4.0",
+    "underscore": "~1.8.3",
+    "webpack": "~3.10.0"
   },
-  "dependencies": {
-    "mkdirp": "~0.3.5"
-  }
+  "dependencies": {}
 }

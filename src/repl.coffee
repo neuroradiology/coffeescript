@@ -2,12 +2,17 @@ fs = require 'fs'
 path = require 'path'
 vm = require 'vm'
 nodeREPL = require 'repl'
-CoffeeScript = require './coffee-script'
+CoffeeScript = require './'
 {merge, updateSyntaxError} = require './helpers'
+
+sawSIGINT = no
+transpile = no
 
 replDefaults =
   prompt: 'coffee> ',
-  historyFile: path.join process.env.HOME, '.coffee_history' if process.env.HOME
+  historyFile: do ->
+    historyPath = process.env.XDG_CACHE_HOME or process.env.HOME
+    path.join historyPath, '.coffee_history' if historyPath
   historyMaxInputSize: 10240
   eval: (input, context, filename, cb) ->
     # XXX: multiline hack.
@@ -15,27 +20,59 @@ replDefaults =
     # Node's REPL sends the input ending with a newline and then wrapped in
     # parens. Unwrap all that.
     input = input.replace /^\(([\s\S]*)\n\)$/m, '$1'
+    # Node's REPL v6.9.1+ sends the input wrapped in a try/catch statement.
+    # Unwrap that too.
+    input = input.replace /^\s*try\s*{([\s\S]*)}\s*catch.*$/m, '$1'
 
     # Require AST nodes to do some AST manipulation.
-    {Block, Assign, Value, Literal} = require './nodes'
+    {Block, Assign, Value, Literal, Call, Code} = require './nodes'
 
     try
-      # Generate the AST of the clean input.
-      ast = CoffeeScript.nodes input
-      # Add assignment to `_` variable to force the input to be an expression.
-      ast = new Block [
-        new Assign (new Value new Literal '_'), ast, '='
-      ]
-      js = ast.compile bare: yes, locals: Object.keys(context)
-      result = if context is global
-        vm.runInThisContext js, filename
+      # Tokenize the clean input.
+      tokens = CoffeeScript.tokens input
+      # Filter out tokens generated just to hold comments.
+      if tokens.length >= 2 and tokens[0].generated and
+         tokens[0].comments?.length isnt 0 and tokens[0][1] is '' and
+         tokens[1][0] is 'TERMINATOR'
+        tokens = tokens[2...]
+      if tokens.length >= 1 and tokens[tokens.length - 1].generated and
+         tokens[tokens.length - 1].comments?.length isnt 0 and tokens[tokens.length - 1][1] is ''
+        tokens.pop()
+      # Collect referenced variable names just like in `CoffeeScript.compile`.
+      referencedVars = (token[1] for token in tokens when token[0] is 'IDENTIFIER')
+      # Generate the AST of the tokens.
+      ast = CoffeeScript.nodes tokens
+      # Add assignment to `__` variable to force the input to be an expression.
+      ast = new Block [new Assign (new Value new Literal '__'), ast, '=']
+      # Wrap the expression in a closure to support top-level `await`.
+      ast     = new Code [], ast
+      isAsync = ast.isAsync
+      # Invoke the wrapping closure.
+      ast    = new Block [new Call ast]
+      js     = ast.compile {bare: yes, locals: Object.keys(context), referencedVars, sharedScope: yes}
+      if transpile
+        js = transpile.transpile(js, transpile.options).code
+        # Strip `"use strict"`, to avoid an exception on assigning to
+        # undeclared variable `__`.
+        js = js.replace /^"use strict"|^'use strict'/, ''
+      result = runInContext js, context, filename
+      # Await an async result, if necessary.
+      if isAsync
+        result.then (resolvedResult) ->
+          cb null, resolvedResult unless sawSIGINT
+        sawSIGINT = no
       else
-        vm.runInContext js, context, filename
-      cb null, result
+        cb null, result
     catch err
       # AST's `compile` does not add source code information to syntax errors.
       updateSyntaxError err, input
       cb err
+
+runInContext = (js, context, filename) ->
+  if context is global
+    vm.runInThisContext js, filename
+  else
+    vm.runInContext js, context, filename
 
 addMultilineHandler = (repl) ->
   {rli, inputStream, outputStream} = repl
@@ -98,8 +135,9 @@ addHistory = (repl, filename, maxSize) ->
     size = Math.min maxSize, stat.size
     # Read last `size` bytes from the file
     readFd = fs.openSync filename, 'r'
-    buffer = new Buffer(size)
+    buffer = Buffer.alloc size
     fs.readSync readFd, buffer, 0, size, stat.size - size
+    fs.closeSync readFd
     # Set the history on the interpreter
     repl.rli.history = buffer.toString().split('\n').reverse()
     # If the history file was truncated we should pop off a potential partial line
@@ -112,12 +150,14 @@ addHistory = (repl, filename, maxSize) ->
   fd = fs.openSync filename, 'a'
 
   repl.rli.addListener 'line', (code) ->
-    if code and code.length and code isnt '.history' and lastLine isnt code
+    if code and code.length and code isnt '.history' and code isnt '.exit' and lastLine isnt code
       # Save the latest command in the file
-      fs.write fd, "#{code}\n"
+      fs.writeSync fd, "#{code}\n"
       lastLine = code
 
-  repl.rli.on 'exit', -> fs.close fd
+  # XXX: The SIGINT event from REPLServer is undocumented, so this is a bit fragile
+  repl.on 'SIGINT', -> sawSIGINT = yes
+  repl.on 'exit', -> fs.closeSync fd
 
   # Add a command to show the history stack
   repl.commands[getCommandId(repl, 'history')] =
@@ -133,17 +173,43 @@ getCommandId = (repl, commandName) ->
 
 module.exports =
   start: (opts = {}) ->
-    [major, minor, build] = process.versions.node.split('.').map (n) -> parseInt(n)
+    [major, minor, build] = process.versions.node.split('.').map (n) -> parseInt(n, 10)
 
-    if major is 0 and minor < 8
-      console.warn "Node 0.8.0+ required for CoffeeScript REPL"
+    if major < 6
+      console.warn "Node 6+ required for CoffeeScript REPL"
       process.exit 1
 
     CoffeeScript.register()
     process.argv = ['coffee'].concat process.argv[2..]
+    if opts.transpile
+      try
+        transpile = {}
+        transpile.transpile = require('babel-core').transform
+      catch
+        console.error '''
+          To use --transpile with an interactive REPL, babel-core must be installed either in the current folder or globally:
+            npm install --save-dev babel-core
+          or
+            npm install --global babel-core
+          And you must save options to configure Babel in one of the places it looks to find its options.
+          See http://coffeescript.org/#transpilation
+        '''
+        process.exit 1
+      transpile.options =
+        filename: path.resolve process.cwd(), '<repl>'
+      # Since the REPL compilation path is unique (in `eval` above), we need
+      # another way to get the `options` object attached to a module so that
+      # it knows later on whether it needs to be transpiled. In the case of
+      # the REPL, the only applicable option is `transpile`.
+      Module = require 'module'
+      originalModuleLoad = Module::load
+      Module::load = (filename) ->
+        @options = transpile: transpile.options
+        originalModuleLoad.call @, filename
     opts = merge replDefaults, opts
     repl = nodeREPL.start opts
-    repl.on 'exit', -> repl.outputStream.write '\n'
+    runInContext opts.prelude, repl.context, 'prelude' if opts.prelude
+    repl.on 'exit', -> repl.outputStream.write '\n' if not repl.rli.closed
     addMultilineHandler repl
     addHistory repl, opts.historyFile, opts.historyMaxInputSize if opts.historyFile
     # Adapt help inherited from the node REPL

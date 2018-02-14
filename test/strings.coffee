@@ -114,6 +114,22 @@ test "#3229, multiline strings", ->
   eq 'first line\
       \   backslash at BOL', 'first line\   backslash at BOL'
 
+  # Backslashes at end of strings.
+  eq 'first line \ ', 'first line  '
+  eq 'first line
+      second line \
+      ', 'first line second line '
+  eq 'first line
+      second line
+      \
+      ', 'first line second line'
+  eq 'first line
+      second line
+
+        \
+
+      ', 'first line second line'
+
   # Edge case.
   eq 'lone
 
@@ -164,12 +180,6 @@ test "#3249, escape newlines in heredocs with backslashes", ->
 
     """, '\n1 2\n'
 
-  # TODO: uncomment when #2388 is fixed
-  # eq """a heredoc #{
-  #     "inside \
-  #       interpolation"
-  #   }""", "a heredoc inside interpolation"
-
   # Handle escaped backslashes correctly.
   eq '''
     escaped backslash at EOL\\
@@ -185,6 +195,25 @@ test "#3249, escape newlines in heredocs with backslashes", ->
   eq """first line\
       \   backslash at BOL""", 'first line\   backslash at BOL'
 
+  # Backslashes at end of strings.
+  eq '''first line \ ''', 'first line  '
+  eq '''
+    first line
+    second line \
+  ''', 'first line\nsecond line '
+  eq '''
+    first line
+    second line
+    \
+  ''', 'first line\nsecond line'
+  eq '''
+    first line
+    second line
+
+      \
+
+  ''', 'first line\nsecond line\n'
+
   # Edge cases.
   eq '''lone
 
@@ -195,6 +224,28 @@ test "#3249, escape newlines in heredocs with backslashes", ->
         backslash''', 'lone\n\n  backslash'
   eq '''\
      ''', ''
+
+test '#2388: `"""` in heredoc interpolations', ->
+  eq """a heredoc #{
+      "inside \
+        interpolation"
+    }""", "a heredoc inside interpolation"
+  eq """a#{"""b"""}c""", 'abc'
+  eq """#{""""""}""", ''
+
+test "trailing whitespace", ->
+  testTrailing = (str, expected) ->
+    eq CoffeeScript.eval(str.replace /\|$/gm, ''), expected
+  testTrailing '''"   |
+      |
+    a   |
+           |
+  "''', 'a'
+  testTrailing """'''   |
+      |
+    a   |
+           |
+  '''""", '  \na   \n       '
 
 #647
 eq "''Hello, World\\''", '''
@@ -259,6 +310,12 @@ ok a is 'more"than"one"quote'
 a = '''here's an apostrophe'''
 ok a is "here's an apostrophe"
 
+a = """""surrounded by two quotes"\""""
+ok a is '""surrounded by two quotes""'
+
+a = '''''surrounded by two apostrophes'\''''
+ok a is "''surrounded by two apostrophes''"
+
 # The indentation detector ignores blank lines without trailing whitespace
 a = """
     one
@@ -272,11 +329,102 @@ eq ''' line 0
     to the indent level
 ''', ' line 0\nshould not be relevant\n  to the indent level'
 
+eq """
+  interpolation #{
+ "contents"
+ }
+  should not be relevant
+    to the indent level
+""", 'interpolation contents\nshould not be relevant\n  to the indent level'
+
 eq ''' '\\\' ''', " '\\' "
 eq """ "\\\" """, ' "\\" '
 
 eq '''  <- keep these spaces ->  ''', '  <- keep these spaces ->  '
 
+eq '''undefined''', 'undefined'
+eq """undefined""", 'undefined'
+
 
 test "#1046, empty string interpolations", ->
   eq "#{ }", ''
+
+test "strings are not callable", ->
+  throws -> CoffeeScript.compile '"a"()'
+  throws -> CoffeeScript.compile '"a#{b}"()'
+  throws -> CoffeeScript.compile '"a" 1'
+  throws -> CoffeeScript.compile '"a#{b}" 1'
+  throws -> CoffeeScript.compile '''
+    "a"
+       k: v
+  '''
+  throws -> CoffeeScript.compile '''
+    "a#{b}"
+       k: v
+  '''
+
+test "#3795: Escape otherwise invalid characters", ->
+  eq ' ', '\u2028'
+  eq ' ', '\u2029'
+  eq '\0\
+      1', '\x001'
+  eq " ", '\u2028'
+  eq " ", '\u2029'
+  eq "\0\
+      1", '\x001'
+  eq ''' ''', '\u2028'
+  eq ''' ''', '\u2029'
+  eq '''\0\
+      1''', '\x001'
+  eq """ """, '\u2028'
+  eq """ """, '\u2029'
+  eq """\0\
+      1""", '\x001'
+
+  a = 'a'
+  eq "#{a} ", 'a\u2028'
+  eq "#{a} ", 'a\u2029'
+  eq "#{a}\0\
+      1", 'a\0' + '1'
+  eq """#{a} """, 'a\u2028'
+  eq """#{a} """, 'a\u2029'
+  eq """#{a}\0\
+      1""", 'a\0' + '1'
+
+test "#4314: Whitespace less than or equal to stripped indentation", ->
+  # The odd indentation is intentional here, to test 1-space indentation.
+  eq ' ', """
+ #{} #{}
+"""
+
+  eq '1 2  3   4    5     end\na 0     b', """
+    #{1} #{2}  #{3}   #{4}    #{5}     end
+    a #{0}     b"""
+
+test "#4248: Unicode code point escapes", ->
+  eq '\u01ab\u00cd', '\u{1ab}\u{cd}'
+  eq '\u01ab', '\u{000001ab}'
+  eq 'a\u01ab', "#{ 'a' }\u{1ab}"
+  eq '\u01abc', '''\u{01ab}c'''
+  eq '\u01abc', """\u{1ab}#{ 'c' }"""
+  eq '\udab3\uddef', '\u{bcdef}'
+  eq '\udab3\uddef', '\u{0000bcdef}'
+  eq 'a\udab3\uddef', "#{ 'a' }\u{bcdef}"
+  eq '\udab3\uddefc', '''\u{0bcdef}c'''
+  eq '\udab3\uddefc', """\u{bcdef}#{ 'c' }"""
+  eq '\\u{123456}', "#{'\\'}#{'u{123456}'}"
+
+  # don't rewrite code point escapes
+  eqJS """
+    '\\u{bcdef}\\u{abc}'
+  """,
+  """
+    '\\u{bcdef}\\u{abc}';
+  """
+
+  eqJS """
+    "#{ 'a' }\\u{bcdef}"
+  """,
+  """
+    "a\\u{bcdef}";
+  """
